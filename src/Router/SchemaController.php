@@ -242,17 +242,10 @@ HTML;
                 if ($table['hasTimestamps']) {
                     $html .= '<span class="badge badge--info">Timestamps</span>';
                 }
-<<<<<<< HEAD
                 if (isset($table['requiresAuth']) && $table['requiresAuth']) {
                     $html .= '<span class="badge badge--purple">Auth Required</span>';
                 }
                 if (isset($table['disabledRoutes']) && !empty($table['disabledRoutes'])) {
-=======
-                if ($table['requiresAuth']) {
-                    $html .= '<span class="badge badge--purple">Auth Required</span>';
-                }
-                if (!empty($table['disabledRoutes'])) {
->>>>>>> 0b4e0fbc6f3564deb8134802880b43dbf54c141b
                     $disabledList = in_array('all', $table['disabledRoutes']) ? 'all' : implode(', ', $table['disabledRoutes']);
                     $html .= '<span class="badge badge--warning">Disabled: ' . htmlspecialchars($disabledList) . '</span>';
                 }
