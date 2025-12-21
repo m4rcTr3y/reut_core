@@ -79,7 +79,8 @@ require_once __DIR__ . '/registerRoutes.php';
     }
     
     $authClass = $requiresAuth ? 'Auth' : 'NoAuth';
-    $parentConstructor = $requiresAuth ? 'parent::__construct(\$app, \$config);' : 'parent::__construct(\$app);';
+    $parentConstructor = $requiresAuth ? 'parent::__construct($app, $config);' : 'parent::__construct($app);';
+    $authDescription = $requiresAuth ? 'with' : 'without';
     
              $template = <<<EOT
                         <?php
@@ -91,12 +92,13 @@ require_once __DIR__ . '/registerRoutes.php';
                         use Psr\Http\Message\ServerRequestInterface as Request;
                         use Reut\Auth\\{$authClass};
                         use Reut\Router\ReuteRoute;
+                        use Reut\Query\ReutQueries;
 
                         //import the {$modelName} model here
                         
                         {$classImport}
 
-                        // {$authClass} class implements endpoints {$requiresAuth ? 'with' : 'without'} authentication
+                        // {$authClass} class implements endpoints {$authDescription} authentication
                         class {$modelName}Router extends {$authClass} {
                             protected \$config;
                              public function __construct(App \$app,Array \$config){
@@ -121,7 +123,7 @@ require_once __DIR__ . '/registerRoutes.php';
                                             \$params = \$request->getQueryParams();
                                             \$page = \$params['page'] ?? 1;
                                             \$limit = \$params['limit'] ?? 20;
-                                            \$data = \$instance->findAll()->paginate((int)\$page, (int)\$limit);
+                                            \$data = ReutQueries::handleFindAll(\$instance, \$request)->paginate((int)\$page, (int)\$limit);
                                             \$response->getBody()->write(json_encode(\$data));
                                             return \$response->withHeader('Content-Type', 'application/json');
                                         }, 'List {$modelName} records with pagination');
@@ -131,7 +133,7 @@ require_once __DIR__ . '/registerRoutes.php';
                                     if (!\$isAllDisabled && !in_array('find', \$disabledRoutes)) {
                                         \$grouped->get('/find/{id}',function (Request \$request, Response \$response, \$args) use (\$instance) {
                                             \$id = \$args['id'];
-                                            \$data = \$instance->findOne(['id' => \$id]);
+                                            \$data = ReutQueries::handleFindOne(\$instance, \$id, \$request);
                                             \$response->getBody()->write(json_encode(\$data->results));
                                             return \$response->withHeader('Content-Type', 'application/json');
                                         }, 'Find single {$modelName} by id');
@@ -152,9 +154,7 @@ require_once __DIR__ . '/registerRoutes.php';
                                         \$grouped->put( '/update/{id}',function (Request \$request, Response \$response, \$args) use (\$instance) {
                                             \$id = \$args['id'];
                                             \$input = \$request->getParsedBody();
-                                            \$result = \$instance->update(\$input, ['id' => \$id]);
-                                            \$response->getBody()->write(json_encode(['status' => \$result]));
-                                            return \$response->withHeader('Content-Type', 'application/json');
+                                            return ReutQueries::handleUpdate(\$instance, \$id, \$input, \$request, \$response);
                                         }, 'Update {$modelName} by id');
                                     }
 
@@ -162,9 +162,7 @@ require_once __DIR__ . '/registerRoutes.php';
                                     if (!\$isAllDisabled && !in_array('delete', \$disabledRoutes)) {
                                         \$grouped->delete('/delete/{id}', function (Request \$request, Response \$response,\$args) use (\$instance) {
                                             \$id = \$args['id'];
-                                            \$result = \$instance->delete(['id' => \$id]);
-                                            \$response->getBody()->write(json_encode(['status' => \$result]));
-                                            return \$response->withHeader('Content-Type', 'application/json');
+                                            return ReutQueries::handleDelete(\$instance, \$id, \$request, \$response);
                                         }, 'Delete {$modelName} by id');
                                     }
 
