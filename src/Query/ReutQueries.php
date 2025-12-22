@@ -28,7 +28,14 @@ class ReutQueries
      */
     public static function isEnabled(): bool
     {
-        return filter_var($_ENV['REUT_QUERIES_ENABLED'] ?? 'false', FILTER_VALIDATE_BOOLEAN);
+        // Check multiple sources: $_ENV, $_SERVER, and getenv() for compatibility
+        $value = $_ENV['REUT_QUERIES_ENABLED'] 
+            ?? $_SERVER['REUT_QUERIES_ENABLED'] 
+            ?? getenv('REUT_QUERIES_ENABLED') 
+            ?? 'false';
+        $result = filter_var($value, FILTER_VALIDATE_BOOLEAN);
+        error_log("[REUT] isEnabled check: \$_ENV=" . ($_ENV['REUT_QUERIES_ENABLED'] ?? 'not set') . ", \$_SERVER=" . ($_SERVER['REUT_QUERIES_ENABLED'] ?? 'not set') . ", getenv=" . (getenv('REUT_QUERIES_ENABLED') ?: 'not set') . ", final value='{$value}', result=" . ($result ? 'true' : 'false'));
+        return $result;
     }
     
     /**
@@ -37,13 +44,30 @@ class ReutQueries
      */
     public static function handleFindAll(DataBase $instance, Request $request): DataBase
     {
+        $log = function($msg) {
+            error_log("[REUT] " . $msg);
+            file_put_contents('/tmp/reut_log', $msg . "\n", FILE_APPEND);
+        };
+        
+        $log("=== handleFindAll START ===");
+        $log("isEnabled: " . (self::isEnabled() ? 'true' : 'false'));
+        
         if (!self::isEnabled()) {
+            $log("Feature disabled, using findAll()");
             return $instance->findAll();
         }
         
+        // Reset instance state for new query
+        // Note: Don't reset foreignKeys - they're part of the model definition
+        $instance->results = null;
+        $instance->paginationInfo = null;
+        $instance->totalCount = null;
+        
         $params = $request->getQueryParams();
         $rawQuery = $request->getUri()->getQuery();
+        $log("rawQuery: {$rawQuery}");
         $queryData = self::parseQueryParams($params, $rawQuery);
+        $log("queryData parsed - with: " . json_encode($queryData['with'] ?? []) . ", withCount: " . json_encode($queryData['withCount'] ?? []) . ", count: " . ($queryData['count'] ?? false ? 'true' : 'false'));
         $selectColumns = $queryData['select'];
         $whereConditions = $queryData['where'];
         $withRelationships = $queryData['with'] ?? [];
@@ -92,6 +116,18 @@ class ReutQueries
             }
         }
         
+        // Extract pagination parameters
+        $page = isset($params['page']) ? max(1, (int)$params['page']) : null;
+        $limit = isset($params['limit']) ? max(1, (int)$params['limit']) : null;
+        $offset = ($page !== null && $limit !== null) ? ($page - 1) * $limit : null;
+        
+        // Store pagination info for later use in paginate()
+        $instance->paginationInfo = [
+            'page' => $page ?? 1,
+            'limit' => $limit ?? 20,
+            'offset' => $offset ?? 0
+        ];
+        
         $result = null;
         
         // Auto-create JOINs for relationship filters if not already provided
@@ -104,24 +140,54 @@ class ReutQueries
             $reutQueries = new self($instance);
             // Fix join ON clauses to use main table name
             $joins = self::fixJoinOnClauses($joins, $instance->tableName);
-            $result = $reutQueries->query($selectColumns, $whereConditions, $joins);
+            $result = $reutQueries->query($selectColumns, $whereConditions, $joins, $limit, $offset);
         } elseif (empty($selectColumns) && empty($whereConditions)) {
-            $result = $instance->findAll();
+            // If no select/where and no pagination params, use findAll() without pagination
+            if ($limit === null) {
+                $result = $instance->findAll();
+            } else {
+                // Use findAll with pagination
+                $result = $instance->findAll(null, null, $limit, $offset);
+            }
         } else {
             $reutQueries = new self($instance);
-            $result = $reutQueries->query($selectColumns, $whereConditions, []);
+            $result = $reutQueries->query($selectColumns, $whereConditions, [], $limit, $offset);
+        }
+        
+        // Store total count for pagination (only if pagination is requested)
+        if ($limit !== null) {
+            $reutQueries = new self($instance);
+            $instance->totalCount = $reutQueries->getTotalCount($whereConditions, $joins);
         }
         
         // Load relationships if requested (eager loading)
+        $log = function($msg) {
+            error_log("[REUT] " . $msg);
+            file_put_contents('/tmp/reut_log', $msg . "\n", FILE_APPEND);
+        };
+        
+        $log("Before loading relationships - withRelationships: " . json_encode($withRelationships) . ", withCountRelationships: " . json_encode($withCountRelationships));
+        $log("Result type: " . get_class($result) . ", results count: " . (is_array($result->results) ? count($result->results) : 'not array'));
+        
         if (!empty($withRelationships)) {
+            $log("Calling with() with relationships: " . json_encode($withRelationships));
             $result->with($withRelationships);
+            $log("After with() - results count: " . (is_array($result->results) ? count($result->results) : 'not array'));
+            if (is_array($result->results) && !empty($result->results)) {
+                $firstResult = $result->results[0];
+                $log("First result keys: " . implode(', ', array_keys($firstResult)));
+            }
+        } else {
+            $log("withRelationships is empty, skipping with()");
         }
         
         // Load relationship counts if requested (efficient COUNT queries)
         if (!empty($withCountRelationships)) {
+            $log("Calling withCount() with relationships: " . json_encode($withCountRelationships));
             $result->withCount($withCountRelationships);
         }
         
+        $log("=== handleFindAll END ===");
         return $result;
     }
     
@@ -175,6 +241,51 @@ class ReutQueries
             error_log("Count query failed: " . $e->getMessage());
             $this->db->results = ['count' => 0];
             return $this->db;
+        }
+    }
+    
+    /**
+     * Get total count of records matching WHERE conditions (for pagination)
+     * Efficient COUNT(*) query without loading data
+     */
+    public function getTotalCount(array $whereConditions = [], array $joins = []): int
+    {
+        $this->db->connect();
+        if (!$this->db->pdo) {
+            return 0;
+        }
+        
+        try {
+            // Auto-create JOINs for relationship filters if not already provided
+            if (self::hasRelationshipFilters($whereConditions) && empty($joins)) {
+                $joins = self::autoCreateJoinsForFilters($this->db, $whereConditions);
+            }
+            
+            // Fix join ON clauses to use main table name
+            if (!empty($joins)) {
+                $joins = self::fixJoinOnClauses($joins, $this->db->tableName);
+            }
+            
+            // Build JOIN clause
+            $joinClause = $this->buildJoinClause($joins);
+            
+            // Build WHERE clause
+            $whereData = $this->buildWhereClause($whereConditions, $joins);
+            $whereClause = $whereData['clause'];
+            $params = $whereData['params'];
+            
+            // Execute COUNT query
+            $tableName = $this->db->tableName;
+            $query = "SELECT COUNT(*) as count FROM `{$tableName}` {$joinClause} {$whereClause}";
+            
+            $stmt = $this->db->pdo->prepare($query);
+            $stmt->execute($params);
+            $result = $stmt->fetch(\PDO::FETCH_ASSOC);
+            
+            return (int)($result['count'] ?? 0);
+        } catch (\PDOException $e) {
+            error_log("Total count query failed: " . $e->getMessage());
+            return 0;
         }
     }
     
@@ -303,7 +414,9 @@ class ReutQueries
         $select = [];
         $where = [];
         $with = [];
+        $withCount = [];
         $joins = [];
+        $countOnly = false;
         
         // If raw query string is provided, parse it manually to preserve dots
         if ($rawQueryString !== null) {
@@ -773,7 +886,7 @@ class ReutQueries
      * @param array $joins Array of join definitions
      * @return DataBase Returns the database instance with results
      */
-    public function query(array $selectColumns = [], array $whereConditions = [], array $joins = []): DataBase
+    public function query(array $selectColumns = [], array $whereConditions = [], array $joins = [], ?int $limit = null, ?int $offset = null): DataBase
     {
         $this->db->connect();
         
@@ -793,9 +906,18 @@ class ReutQueries
             $whereClause = $whereData['clause'];
             $params = $whereData['params'];
             
+            // Build LIMIT/OFFSET clause
+            $limitClause = '';
+            if ($limit !== null && $limit > 0) {
+                $limitClause = " LIMIT " . (int)$limit;
+                if ($offset !== null && $offset > 0) {
+                    $limitClause .= " OFFSET " . (int)$offset;
+                }
+            }
+            
             // Build and execute query
             $tableName = $this->db->tableName;
-            $query = "SELECT {$selectClause} FROM `{$tableName}` {$joinClause} {$whereClause}";
+            $query = "SELECT {$selectClause} FROM `{$tableName}` {$joinClause} {$whereClause}{$limitClause}";
             
             // Temporary debug - remove after fixing
             if (empty($results = [])) { // This will always be false, just to add breakpoint
