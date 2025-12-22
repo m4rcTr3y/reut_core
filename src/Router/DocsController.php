@@ -17,19 +17,34 @@ class DocsController
         // Load model metadata to get disabled routes and auth info
         $modelMetadata = $this->loadModelMetadata();
 
+        // Set cache headers to prevent browser caching
+        $cacheHeaders = [
+            'Cache-Control' => 'no-cache, no-store, must-revalidate',
+            'Pragma' => 'no-cache',
+            'Expires' => '0'
+        ];
+
         if ($format === 'json') {
             $response->getBody()->write(json_encode([
                 'endpoints' => $endpoints,
                 'models' => $modelMetadata,
                 'total' => count($endpoints)
             ], JSON_PRETTY_PRINT));
-            return $response->withHeader('Content-Type', 'application/json');
+            $response = $response->withHeader('Content-Type', 'application/json');
+            foreach ($cacheHeaders as $name => $value) {
+                $response = $response->withHeader($name, $value);
+            }
+            return $response;
         }
 
         // HTML format
         $html = $this->generateHtml($endpoints, $modelMetadata);
         $response->getBody()->write($html);
-        return $response->withHeader('Content-Type', 'text/html');
+        $response = $response->withHeader('Content-Type', 'text/html');
+        foreach ($cacheHeaders as $name => $value) {
+            $response = $response->withHeader($name, $value);
+        }
+        return $response;
     }
     
     private function loadModelMetadata(): array
@@ -95,6 +110,9 @@ class DocsController
         }
 
         $html = '<!DOCTYPE html><html><head><title>API Documentation</title>';
+        $html .= '<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">';
+        $html .= '<meta http-equiv="Pragma" content="no-cache">';
+        $html .= '<meta http-equiv="Expires" content="0">';
         $html .= '<style>
             body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
             .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
