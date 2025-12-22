@@ -121,10 +121,20 @@ require_once __DIR__ . '/registerRoutes.php';
                                     if (!\$isAllDisabled && !in_array('all', \$disabledRoutes)) {
                                         \$grouped->get('/all', function (Request \$request, Response \$response) use (\$instance) {
                                             \$params = \$request->getQueryParams();
-                                            \$page = \$params['page'] ?? 1;
-                                            \$limit = \$params['limit'] ?? 20;
-                                            \$data = ReutQueries::handleFindAll(\$instance, \$request)->paginate((int)\$page, (int)\$limit);
-                                            \$response->getBody()->write(json_encode(\$data));
+                                            \$countOnly = isset(\$params['count']) && filter_var(\$params['count'], FILTER_VALIDATE_BOOLEAN);
+                                            
+                                            if (\$countOnly) {
+                                                // Count-only mode: return just the count object
+                                                \$data = ReutQueries::handleFindAll(\$instance, \$request);
+                                                // $data->results should be ['count' => number]
+                                                \$response->getBody()->write(json_encode(\$data->results));
+                                            } else {
+                                                // Normal mode: return paginated results
+                                                \$page = \$params['page'] ?? 1;
+                                                \$limit = \$params['limit'] ?? 20;
+                                                \$data = ReutQueries::handleFindAll(\$instance, \$request)->paginate((int)\$page, (int)\$limit);
+                                                \$response->getBody()->write(json_encode(\$data));
+                                            }
                                             return \$response->withHeader('Content-Type', 'application/json');
                                         }, 'List {$modelName} records with pagination');
                                     }
