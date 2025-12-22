@@ -47,7 +47,50 @@ class ReutQueries
         $selectColumns = $queryData['select'];
         $whereConditions = $queryData['where'];
         $withRelationships = $queryData['with'] ?? [];
+        $withCountRelationships = $queryData['withCount'] ?? [];
         $joins = $queryData['joins'] ?? [];
+        $countOnly = $queryData['count'] ?? false;
+        
+        // If count-only mode, return efficient COUNT query
+        if ($countOnly) {
+            $reutQueries = new self($instance);
+            return $reutQueries->handleCountQuery($whereConditions, $joins);
+        }
+        
+        // If using relationship aliases, ensure FK columns are included in select for relationship loading
+        // They will be removed from results later, but we need them to load the relationships
+        // Note: Skip FK columns for hasMany relationships (they're in the other table, not current table)
+        if (!empty($selectColumns) && !empty($withRelationships)) {
+            foreach ($withRelationships as $relationship) {
+                if (is_array($relationship) && count($relationship) === 2) {
+                    // New format: [alias, fkColumn]
+                    [$alias, $fkColumn] = $relationship;
+                    $fkColumn = trim($fkColumn);
+                    
+                    // Check if this FK column exists in current table (belongsTo) or in another table (hasMany)
+                    // Only add to select if it's in current table
+                    $hasMetadata = false;
+                    $foreignKeys = method_exists($instance, 'getForeignKeys') 
+                        ? $instance->getForeignKeys() 
+                        : ($instance->foreignKeys ?? []);
+                    
+                    foreach ($foreignKeys as $fk) {
+                        if (is_array($fk) && isset($fk['column']) && $fk['column'] === $fkColumn) {
+                            $hasMetadata = true;
+                            break;
+                        } elseif (is_string($fk) && $fk === $fkColumn) {
+                            $hasMetadata = true;
+                            break;
+                        }
+                    }
+                    
+                    // Only add FK column to select if it exists in current table (belongsTo relationship)
+                    if ($hasMetadata && !in_array($fkColumn, $selectColumns)) {
+                        $selectColumns[] = $fkColumn;
+                    }
+                }
+            }
+        }
         
         $result = null;
         
@@ -74,7 +117,65 @@ class ReutQueries
             $result->with($withRelationships);
         }
         
+        // Load relationship counts if requested (efficient COUNT queries)
+        if (!empty($withCountRelationships)) {
+            $result->withCount($withCountRelationships);
+        }
+        
         return $result;
+    }
+    
+    /**
+     * Handle count-only query (efficient COUNT query, no data)
+     * 
+     * @param array $whereConditions Where conditions
+     * @param array $joins Join definitions
+     * @return DataBase Instance with count in results
+     */
+    private function handleCountQuery(array $whereConditions, array $joins): DataBase
+    {
+        $this->db->connect();
+        if (!$this->db->pdo) {
+            $this->db->results = ['count' => 0];
+            return $this->db;
+        }
+        
+        try {
+            // Auto-create JOINs for relationship filters if not already provided
+            if (self::hasRelationshipFilters($whereConditions) && empty($joins)) {
+                $joins = self::autoCreateJoinsForFilters($this->db, $whereConditions);
+            }
+            
+            // Fix join ON clauses to use main table name
+            if (!empty($joins)) {
+                $joins = self::fixJoinOnClauses($joins, $this->db->tableName);
+            }
+            
+            // Build JOIN clause
+            $joinClause = $this->buildJoinClause($joins);
+            
+            // Build WHERE clause
+            $whereData = $this->buildWhereClause($whereConditions, $joins);
+            $whereClause = $whereData['clause'];
+            $params = $whereData['params'];
+            
+            // Execute COUNT query
+            $tableName = $this->db->tableName;
+            $query = "SELECT COUNT(*) as count FROM `{$tableName}` {$joinClause} {$whereClause}";
+            
+            $stmt = $this->db->pdo->prepare($query);
+            $stmt->execute($params);
+            $result = $stmt->fetch(\PDO::FETCH_ASSOC);
+            
+            // Store count in results
+            $this->db->results = ['count' => (int)($result['count'] ?? 0)];
+            
+            return $this->db;
+        } catch (\PDOException $e) {
+            error_log("Count query failed: " . $e->getMessage());
+            $this->db->results = ['count' => 0];
+            return $this->db;
+        }
     }
     
     /**
@@ -195,7 +296,7 @@ class ReutQueries
      * 
      * @param array $queryParams Query parameters from request (may have dots converted to underscores)
      * @param string|null $rawQueryString Optional raw query string to parse manually
-     * @return array ['select' => [...], 'where' => [...], 'with' => [...], 'joins' => [...]]
+     * @return array ['select' => [...], 'where' => [...], 'with' => [...], 'withCount' => [...], 'joins' => [...]]
      */
     public static function parseQueryParams(array $queryParams, ?string $rawQueryString = null): array
     {
@@ -216,9 +317,39 @@ class ReutQueries
                 if ($key === 'select') {
                     $select = array_map('trim', explode(',', $value));
                     $select = array_filter($select);
+                } elseif ($key === 'count') {
+                    // Count-only mode: return only count, no data
+                    $countOnly = filter_var($value, FILTER_VALIDATE_BOOLEAN);
                 } elseif ($key === 'with') {
-                    $with = array_map('trim', explode(',', $value));
-                    $with = array_filter($with);
+                    // Parse with parameter: supports both old format (user_id) and new format (user:user_id)
+                    $withParts = array_map('trim', explode(',', $value));
+                    $withParts = array_filter($withParts);
+                    
+                    $with = [];
+                    foreach ($withParts as $part) {
+                        // Check if it's new format (contains colon) or old format
+                        if (strpos($part, ':') !== false) {
+                            // New format: "user:user_id" -> ['user', 'user_id']
+                            [$alias, $fkColumn] = explode(':', $part, 2);
+                            $with[] = [trim($alias), trim($fkColumn)];
+                        } else {
+                            // Old format: "user_id" -> 'user_id' (backward compatibility)
+                            $with[] = $part;
+                        }
+                    }
+                } elseif ($key === 'withCount') {
+                    // Parse withCount parameter: format is alias:fkColumn (e.g., "comments:post_id")
+                    $withCountParts = array_map('trim', explode(',', $value));
+                    $withCountParts = array_filter($withCountParts);
+                    
+                    $withCount = [];
+                    foreach ($withCountParts as $part) {
+                        if (strpos($part, ':') !== false) {
+                            // Format: "comments:post_id" -> ['comments', 'post_id']
+                            [$alias, $fkColumn] = explode(':', $part, 2);
+                            $withCount[] = [trim($alias), trim($fkColumn)];
+                        }
+                    }
                 } elseif ($key === 'join') {
                     // Parse join parameter: ?join=table:local_col=ref_col:type:alias
                     $joins = self::parseJoinParameter($value);
@@ -282,8 +413,32 @@ class ReutQueries
             
             // Parse with parameter: ?with=user,comments
             if (isset($queryParams['with']) && !empty($queryParams['with'])) {
-                $with = array_map('trim', explode(',', $queryParams['with']));
-                $with = array_filter($with);
+                $withParts = array_map('trim', explode(',', $queryParams['with']));
+                $withParts = array_filter($withParts);
+                
+                $with = [];
+                foreach ($withParts as $part) {
+                    if (strpos($part, ':') !== false) {
+                        [$alias, $fkColumn] = explode(':', $part, 2);
+                        $with[] = [trim($alias), trim($fkColumn)];
+                    } else {
+                        $with[] = $part;
+                    }
+                }
+            }
+            
+            // Parse withCount parameter: ?withCount=comments:post_id
+            if (isset($queryParams['withCount']) && !empty($queryParams['withCount'])) {
+                $withCountParts = array_map('trim', explode(',', $queryParams['withCount']));
+                $withCountParts = array_filter($withCountParts);
+                
+                $withCount = [];
+                foreach ($withCountParts as $part) {
+                    if (strpos($part, ':') !== false) {
+                        [$alias, $fkColumn] = explode(':', $part, 2);
+                        $withCount[] = [trim($alias), trim($fkColumn)];
+                    }
+                }
             }
             
             // Parse join parameter: ?join=table:local_col=ref_col:type:alias
@@ -295,7 +450,7 @@ class ReutQueries
             // Note: PHP converts dots to underscores, so we need to check for underscores too
             foreach ($queryParams as $key => $value) {
                 // Skip reserved parameters
-                if (in_array($key, ['select', 'with', 'page', 'limit', 'offset', 'order', 'orderBy'])) {
+                if (in_array($key, ['select', 'with', 'withCount', 'page', 'limit', 'offset', 'order', 'orderBy'])) {
                     continue;
                 }
                 
@@ -346,7 +501,7 @@ class ReutQueries
             }
         }
         
-        return ['select' => $select, 'where' => $where, 'with' => $with, 'joins' => $joins];
+        return ['select' => $select, 'where' => $where, 'with' => $with, 'withCount' => $withCount, 'joins' => $joins, 'count' => $countOnly];
     }
 
     /**
@@ -654,6 +809,7 @@ class ReutQueries
             $results = $stmt->fetchAll(\PDO::FETCH_ASSOC);
             
             // Format results based on join structure
+            // Note: formatJoinResults doesn't filter relationships - relationships are loaded after this
             $this->db->results = $this->formatJoinResults($results, $selectColumns, $joins);
             
             return $this->db;
@@ -786,7 +942,7 @@ class ReutQueries
      * @param array $joins Join definitions
      * @return array ['clause' => string, 'params' => array]
      */
-    private function buildWhereClause(array $whereConditions, array $joins): array
+    public function buildWhereClause(array $whereConditions, array $joins): array
     {
         $whereParts = [];
         $params = [];
@@ -1039,12 +1195,24 @@ class ReutQueries
                 continue;
             }
             $filteredRow = [];
+            
+            // First, add selected columns
             foreach ($selectColumns as $col) {
                 $col = trim($col);
                 if (isset($row[$col])) {
                     $filteredRow[$col] = $row[$col];
                 }
             }
+            
+            // Then, preserve relationship data (arrays/objects that aren't simple columns)
+            // Relationships are loaded after select, so they won't be in selectColumns
+            foreach ($row as $key => $value) {
+                // If it's an array/object and not in selectColumns, it's likely a relationship
+                if (is_array($value) && !in_array($key, $selectColumns)) {
+                    $filteredRow[$key] = $value;
+                }
+            }
+            
             $filtered[] = $filteredRow;
         }
         
