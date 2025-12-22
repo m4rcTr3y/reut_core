@@ -2,6 +2,7 @@
     "name": "reut/core",
     "description": "Internal core package for the REUT framework.",
     "type": "library",
+    "version": "1.4.7",
     "license": "MIT",
     "autoload": {
         "psr-4": {
