@@ -74,6 +74,8 @@ class ReutQueries
         $withCountRelationships = $queryData['withCount'] ?? [];
         $joins = $queryData['joins'] ?? [];
         $countOnly = $queryData['count'] ?? false;
+        $orderBy = $queryData['orderBy'] ?? null;
+        $order = $queryData['order'] ?? 'asc';
         
         // If count-only mode, return efficient COUNT query
         if ($countOnly) {
@@ -140,18 +142,19 @@ class ReutQueries
             $reutQueries = new self($instance);
             // Fix join ON clauses to use main table name
             $joins = self::fixJoinOnClauses($joins, $instance->tableName);
-            $result = $reutQueries->query($selectColumns, $whereConditions, $joins, $limit, $offset);
+            $result = $reutQueries->query($selectColumns, $whereConditions, $joins, $limit, $offset, $orderBy, $order);
         } elseif (empty($selectColumns) && empty($whereConditions)) {
             // If no select/where and no pagination params, use findAll() without pagination
-            if ($limit === null) {
+            if ($limit === null && $orderBy === null) {
                 $result = $instance->findAll();
             } else {
-                // Use findAll with pagination
-                $result = $instance->findAll(null, null, $limit, $offset);
+                // Use findAll with pagination or orderBy - need to use query builder
+                $reutQueries = new self($instance);
+                $result = $reutQueries->query($selectColumns, $whereConditions, [], $limit, $offset, $orderBy, $order);
             }
         } else {
             $reutQueries = new self($instance);
-            $result = $reutQueries->query($selectColumns, $whereConditions, [], $limit, $offset);
+            $result = $reutQueries->query($selectColumns, $whereConditions, [], $limit, $offset, $orderBy, $order);
         }
         
         // Store total count for pagination (only if pagination is requested)
@@ -417,6 +420,8 @@ class ReutQueries
         $withCount = [];
         $joins = [];
         $countOnly = false;
+        $orderBy = null;
+        $order = 'asc';
         
         // If raw query string is provided, parse it manually to preserve dots
         if ($rawQueryString !== null) {
@@ -466,7 +471,16 @@ class ReutQueries
                 } elseif ($key === 'join') {
                     // Parse join parameter: ?join=table:local_col=ref_col:type:alias
                     $joins = self::parseJoinParameter($value);
-                } elseif (!in_array($key, ['page', 'limit', 'offset', 'order', 'orderBy'])) {
+                } elseif ($key === 'orderBy') {
+                    // Parse orderBy parameter: column name
+                    $orderBy = trim($value);
+                } elseif ($key === 'order') {
+                    // Parse order parameter: direction (asc or desc)
+                    $order = strtolower(trim($value));
+                    if (!in_array($order, ['asc', 'desc'])) {
+                        $order = 'asc'; // Default to asc if invalid
+                    }
+                } elseif (!in_array($key, ['page', 'limit', 'offset'])) {
                     // Check if it's a relationship-based filter: table.column=value
                     // Note: PHP converts dots to underscores, so we need to check the raw key
                     // But if we're parsing from raw query string, dots are preserved
@@ -559,6 +573,19 @@ class ReutQueries
                 $joins = self::parseJoinParameter($queryParams['join']);
             }
             
+            // Parse orderBy parameter: ?orderBy=column
+            if (isset($queryParams['orderBy']) && !empty($queryParams['orderBy'])) {
+                $orderBy = trim($queryParams['orderBy']);
+            }
+            
+            // Parse order parameter: ?order=asc|desc
+            if (isset($queryParams['order']) && !empty($queryParams['order'])) {
+                $order = strtolower(trim($queryParams['order']));
+                if (!in_array($order, ['asc', 'desc'])) {
+                    $order = 'asc'; // Default to asc if invalid
+                }
+            }
+            
             // Parse where parameters
             // Note: PHP converts dots to underscores, so we need to check for underscores too
             foreach ($queryParams as $key => $value) {
@@ -614,7 +641,16 @@ class ReutQueries
             }
         }
         
-        return ['select' => $select, 'where' => $where, 'with' => $with, 'withCount' => $withCount, 'joins' => $joins, 'count' => $countOnly];
+        return [
+            'select' => $select, 
+            'where' => $where, 
+            'with' => $with, 
+            'withCount' => $withCount, 
+            'joins' => $joins, 
+            'count' => $countOnly,
+            'orderBy' => $orderBy,
+            'order' => $order
+        ];
     }
 
     /**
@@ -884,9 +920,13 @@ class ReutQueries
      * @param array $selectColumns Array of column names to select
      * @param array $whereConditions Array of where conditions
      * @param array $joins Array of join definitions
+     * @param int|null $limit Limit for results
+     * @param int|null $offset Offset for results
+     * @param string|null $orderBy Column name to order by
+     * @param string $order Order direction (asc or desc)
      * @return DataBase Returns the database instance with results
      */
-    public function query(array $selectColumns = [], array $whereConditions = [], array $joins = [], ?int $limit = null, ?int $offset = null): DataBase
+    public function query(array $selectColumns = [], array $whereConditions = [], array $joins = [], ?int $limit = null, ?int $offset = null, ?string $orderBy = null, string $order = 'asc'): DataBase
     {
         $this->db->connect();
         
@@ -906,6 +946,26 @@ class ReutQueries
             $whereClause = $whereData['clause'];
             $params = $whereData['params'];
             
+            // Build ORDER BY clause
+            $orderClause = '';
+            if ($orderBy !== null && !empty($orderBy)) {
+                // Handle table.column format for joined tables
+                $orderDirection = strtoupper($order) === 'DESC' ? 'DESC' : 'ASC';
+                if (strpos($orderBy, '.') !== false) {
+                    // Format: table.column or alias.column
+                    $parts = explode('.', $orderBy, 2);
+                    $tablePart = trim($parts[0]);
+                    $columnPart = trim($parts[1]);
+                    $this->validateIdentifier($tablePart);
+                    $this->validateIdentifier($columnPart);
+                    $orderClause = " ORDER BY `{$tablePart}`.`{$columnPart}` {$orderDirection}";
+                } else {
+                    // Simple column name (from main table)
+                    $this->validateIdentifier($orderBy);
+                    $orderClause = " ORDER BY `{$orderBy}` {$orderDirection}";
+                }
+            }
+            
             // Build LIMIT/OFFSET clause
             $limitClause = '';
             if ($limit !== null && $limit > 0) {
@@ -917,7 +977,7 @@ class ReutQueries
             
             // Build and execute query
             $tableName = $this->db->tableName;
-            $query = "SELECT {$selectClause} FROM `{$tableName}` {$joinClause} {$whereClause}{$limitClause}";
+            $query = "SELECT {$selectClause} FROM `{$tableName}` {$joinClause} {$whereClause}{$orderClause}{$limitClause}";
             
             // Temporary debug - remove after fixing
             if (empty($results = [])) { // This will always be false, just to add breakpoint
