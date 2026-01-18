@@ -52,6 +52,13 @@ class SchemaController
         
         $format = $request->getQueryParams()['format'] ?? 'html';
         
+        // Disable caching for schema viewer
+        $noCacheHeaders = [
+            'Cache-Control' => 'no-cache, no-store, must-revalidate',
+            'Pragma' => 'no-cache',
+            'Expires' => '0'
+        ];
+        
         if ($format === 'json') {
             $response->getBody()->write(json_encode([
                 'tables' => $tables,
@@ -59,12 +66,20 @@ class SchemaController
                 'total' => count($tables),
                 'generated' => date('Y-m-d H:i:s')
             ], JSON_PRETTY_PRINT));
-            return $response->withHeader('Content-Type', 'application/json');
+            $response = $response->withHeader('Content-Type', 'application/json');
+            foreach ($noCacheHeaders as $name => $value) {
+                $response = $response->withHeader($name, $value);
+            }
+            return $response;
         }
         
         $html = $this->generateHtml($tables, $errors);
         $response->getBody()->write($html);
-        return $response->withHeader('Content-Type', 'text/html');
+        $response = $response->withHeader('Content-Type', 'text/html');
+        foreach ($noCacheHeaders as $name => $value) {
+            $response = $response->withHeader($name, $value);
+        }
+        return $response;
     }
     
     private function loadModelMetadata(string $filePath, string $modelsNamespace, array $config, array &$errors): ?array
