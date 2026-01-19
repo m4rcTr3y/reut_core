@@ -28,6 +28,12 @@ class Timestamp extends ColumnType
     {
         $parts = [];
 
+        // For nullable TIMESTAMP columns, explicitly set DEFAULT NULL
+        // MySQL requires explicit DEFAULT NULL for nullable TIMESTAMP columns
+        if ($this->nullable && !$this->useCurrentTimestampDefault) {
+            $parts[] = "DEFAULT NULL";
+        }
+
         if ($this->useCurrentTimestampDefault) {
             $parts[] = "DEFAULT CURRENT_TIMESTAMP";
         }
