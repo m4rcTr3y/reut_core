@@ -246,7 +246,10 @@ class DataBase
 
     public function getAddColumnSQL(string $column, ColumnType $type): string
     {
-        return "ALTER TABLE " . $this->tableName . " ADD $column " . $type->getSql();
+        // Escape table and column names with backticks to handle reserved keywords
+        $escapedTableName = "`{$this->tableName}`";
+        $escapedColumnName = "`{$column}`";
+        return "ALTER TABLE {$escapedTableName} ADD {$escapedColumnName} " . $type->getSql();
     }
 
     /**
@@ -281,7 +284,9 @@ class DataBase
 
         $primaryKeys = [];
         foreach ($this->columns as $name => $colType) {
-            $columnDefinitions[] = "  $name " . $colType->getSql();
+            // Escape column names with backticks to handle reserved keywords (e.g., 'key')
+            $escapedName = "`{$name}`";
+            $columnDefinitions[] = "  {$escapedName} " . $colType->getSql();
             if ($colType->isPrimaryKey()) {
                 $primaryKeys[] = $name;
             }
@@ -289,7 +294,9 @@ class DataBase
 
         $constraintDefinitions = $this->buildForeignKeySql();
 
-        $sql = "CREATE TABLE IF NOT EXISTS {$this->tableName} (\n";
+        // Escape table name with backticks to handle reserved keywords
+        $escapedTableName = "`{$this->tableName}`";
+        $sql = "CREATE TABLE IF NOT EXISTS {$escapedTableName} (\n";
         $sql .= implode(",\n", array_merge($columnDefinitions, $constraintDefinitions));
         $sql .= "\n) ENGINE=InnoDB;";
         return $sql;
@@ -308,12 +315,16 @@ class DataBase
                     $index + 1
                 );
 
+            // Escape column and table names with backticks to handle reserved keywords
+            $escapedColumn = "`{$fk['column']}`";
+            $escapedReferencedTable = "`{$fk['referenced_table']}`";
+            $escapedReferencedColumn = "`{$fk['referenced_column']}`";
             $sql[] = sprintf(
                 "  CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s) ON DELETE %s ON UPDATE %s",
                 $constraintName,
-                $fk['column'],
-                $fk['referenced_table'],
-                $fk['referenced_column'],
+                $escapedColumn,
+                $escapedReferencedTable,
+                $escapedReferencedColumn,
                 $fk['on_delete'],
                 $fk['on_update']
             );
