@@ -249,6 +249,22 @@ class DataBase
         return "ALTER TABLE " . $this->tableName . " ADD $column " . $type->getSql();
     }
 
+    /**
+     * Get CREATE TABLE SQL statement
+     * Wrapper around genSQL() for consistency with getAddColumnSQL()
+     * 
+     * @return string SQL CREATE TABLE statement
+     * @throws \RuntimeException If table has no columns
+     */
+    public function getCreateTableSQL(): string
+    {
+        $sql = $this->genSQL();
+        if ($sql === false) {
+            throw new \RuntimeException("Cannot generate SQL: table '{$this->tableName}' has no columns defined");
+        }
+        return $sql;
+    }
+
     public function addColumnToTable(string $column, ColumnType $type): bool
     {
         $sql = $this->getAddColumnSQL($column, $type);
