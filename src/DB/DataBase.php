@@ -50,7 +50,7 @@ class DataBase
 
     public array $columns = [];
     public array $protectedColumns = ['created_at', 'updated_at'];
-    protected array $foreignKeys = [];
+    public array $foreignKeys = [];
 
     // Dangerous file extensions that should never be allowed
     private const DANGEROUS_EXTENSIONS = ['php', 'phtml', 'php3', 'php4', 'php5', 'phps', 'phar', 'exe', 'sh', 'bat', 'cmd', 'com', 'pif', 'scr', 'vbs', 'js', 'jsp', 'asp', 'aspx'];
@@ -246,26 +246,7 @@ class DataBase
 
     public function getAddColumnSQL(string $column, ColumnType $type): string
     {
-        // Escape table and column names with backticks to handle reserved keywords
-        $escapedTableName = "`{$this->tableName}`";
-        $escapedColumnName = "`{$column}`";
-        return "ALTER TABLE {$escapedTableName} ADD {$escapedColumnName} " . $type->getSql();
-    }
-
-    /**
-     * Get CREATE TABLE SQL statement
-     * Wrapper around genSQL() for consistency with getAddColumnSQL()
-     * 
-     * @return string SQL CREATE TABLE statement
-     * @throws \RuntimeException If table has no columns
-     */
-    public function getCreateTableSQL(): string
-    {
-        $sql = $this->genSQL();
-        if ($sql === false) {
-            throw new \RuntimeException("Cannot generate SQL: table '{$this->tableName}' has no columns defined");
-        }
-        return $sql;
+        return "ALTER TABLE " . $this->tableName . " ADD $column " . $type->getSql();
     }
 
     public function addColumnToTable(string $column, ColumnType $type): bool
@@ -284,9 +265,7 @@ class DataBase
 
         $primaryKeys = [];
         foreach ($this->columns as $name => $colType) {
-            // Escape column names with backticks to handle reserved keywords (e.g., 'key')
-            $escapedName = "`{$name}`";
-            $columnDefinitions[] = "  {$escapedName} " . $colType->getSql();
+            $columnDefinitions[] = "  `$name` " . $colType->getSql();
             if ($colType->isPrimaryKey()) {
                 $primaryKeys[] = $name;
             }
@@ -294,9 +273,7 @@ class DataBase
 
         $constraintDefinitions = $this->buildForeignKeySql();
 
-        // Escape table name with backticks to handle reserved keywords
-        $escapedTableName = "`{$this->tableName}`";
-        $sql = "CREATE TABLE IF NOT EXISTS {$escapedTableName} (\n";
+        $sql = "CREATE TABLE IF NOT EXISTS {$this->tableName} (\n";
         $sql .= implode(",\n", array_merge($columnDefinitions, $constraintDefinitions));
         $sql .= "\n) ENGINE=InnoDB;";
         return $sql;
@@ -315,16 +292,12 @@ class DataBase
                     $index + 1
                 );
 
-            // Escape column and table names with backticks to handle reserved keywords
-            $escapedColumn = "`{$fk['column']}`";
-            $escapedReferencedTable = "`{$fk['referenced_table']}`";
-            $escapedReferencedColumn = "`{$fk['referenced_column']}`";
             $sql[] = sprintf(
                 "  CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s) ON DELETE %s ON UPDATE %s",
                 $constraintName,
-                $escapedColumn,
-                $escapedReferencedTable,
-                $escapedReferencedColumn,
+                $fk['column'],
+                $fk['referenced_table'],
+                $fk['referenced_column'],
                 $fk['on_delete'],
                 $fk['on_update']
             );
