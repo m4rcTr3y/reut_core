@@ -46,7 +46,7 @@ class ReutQueries
     {
         $log = function($msg) {
             error_log("[REUT] " . $msg);
-            file_put_contents('/tmp/reut_log', $msg . "\n", FILE_APPEND);
+            file_put_contents(DataBase::getReutLogPath(), $msg . "\n", FILE_APPEND);
         };
         
         $log("=== handleFindAll START ===");
@@ -166,7 +166,7 @@ class ReutQueries
         // Load relationships if requested (eager loading)
         $log = function($msg) {
             error_log("[REUT] " . $msg);
-            file_put_contents('/tmp/reut_log', $msg . "\n", FILE_APPEND);
+            file_put_contents(DataBase::getReutLogPath(), $msg . "\n", FILE_APPEND);
         };
         
         $log("Before loading relationships - withRelationships: " . json_encode($withRelationships) . ", withCountRelationships: " . json_encode($withCountRelationships));

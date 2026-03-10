@@ -55,6 +55,14 @@ class DataBase
     // Dangerous file extensions that should never be allowed
     private const DANGEROUS_EXTENSIONS = ['php', 'phtml', 'php3', 'php4', 'php5', 'phps', 'phar', 'exe', 'sh', 'bat', 'cmd', 'com', 'pif', 'scr', 'vbs', 'js', 'jsp', 'asp', 'aspx'];
 
+    /**
+     * Path for reut debug log (Windows-compatible; overridable via REUT_LOG_PATH).
+     */
+    public static function getReutLogPath(): string
+    {
+        return $_ENV['REUT_LOG_PATH'] ?? (sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'reut_log');
+    }
+
     public function __construct(array $config, $columns = [], ?String $tableName = null, Bool $hasRelationships = false, $relationships = 0, array $fileFields = [], array $disabledRoutes = [], array $protectedColumns = ['created_at', 'updated_at'], ?bool $strictRequiredValidation = null, array $fileFieldTypes = [], bool $requiresAuth = false)
     {
         $this->config = $config;
@@ -591,7 +599,7 @@ class DataBase
     {
         $log = function($msg) {
             error_log("[REUT] " . $msg);
-            file_put_contents('/tmp/reut_log', $msg . "\n", FILE_APPEND);
+            file_put_contents(self::getReutLogPath(), $msg . "\n", FILE_APPEND);
         };
         
         $log("=== with() START ===");
@@ -632,7 +640,7 @@ class DataBase
         
         $log = function($msg) {
             error_log("[REUT] " . $msg);
-            file_put_contents('/tmp/reut_log', $msg . "\n", FILE_APPEND);
+            file_put_contents(self::getReutLogPath(), $msg . "\n", FILE_APPEND);
         };
         
         $log("isSingle: " . ($isSingle ? 'yes' : 'no'));
@@ -1125,7 +1133,7 @@ class DataBase
     {
         $log = function($msg) {
             error_log("[REUT] " . $msg);
-            file_put_contents('/tmp/reut_log', $msg . "\n", FILE_APPEND);
+            file_put_contents(self::getReutLogPath(), $msg . "\n", FILE_APPEND);
         };
         
         if (empty($records)) {
@@ -1209,7 +1217,7 @@ class DataBase
     {
         $log = function($msg) {
             error_log("[REUT] " . $msg);
-            file_put_contents('/tmp/reut_log', $msg . "\n", FILE_APPEND);
+            file_put_contents(self::getReutLogPath(), $msg . "\n", FILE_APPEND);
         };
         
         $log("=== batchLoadBelongsToRelationships START ===");
